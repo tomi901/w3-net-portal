@@ -1,0 +1,16 @@
+[package]
+name = "w3-portal"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "w3_portal"
+path = "src/lib.rs"
+
+[[bin]]
+name = "w3-net-portal-cli"
+path = "src/bin/w3-net-portal-cli.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+pnet = "0.35"
