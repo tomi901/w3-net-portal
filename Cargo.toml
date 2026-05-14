@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "w3-net-portal-cli"
 path = "src/bin/w3-net-portal-cli.rs"
 
+[profile.release]
+strip = true
+opt-level = "z"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 pnet = "0.35"

@@ -17,10 +17,11 @@
 //! Requires `CAP_NET_RAW` (sudo, or `setcap cap_net_raw+ep` on the binary).
 
 use std::collections::HashSet;
-use std::io;
+use std::{io, thread};
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::Arc;
 
-use pnet::datalink::{self, Channel, DataLinkReceiver};
+use pnet::datalink::{self, Channel, DataLinkReceiver, NetworkInterface};
 use pnet::ipnetwork::IpNetwork;
 use pnet::packet::Packet;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
@@ -38,16 +39,16 @@ const UDP_HDR_LEN: usize = 8;
 #[derive(Debug, Clone)]
 pub struct ForwarderConfig {
     pub port: u16,
-    pub iface: String,
+    pub ifaces: Vec<String>,
     pub peers: Vec<Ipv4Addr>,
     pub verbose: bool,
 }
 
 impl ForwarderConfig {
-    pub fn new(port: u16, iface: impl Into<String>) -> Self {
+    pub fn new(port: u16, ifaces: Vec<String>) -> Self {
         Self {
             port,
-            iface: iface.into(),
+            ifaces,
             peers: Vec::new(),
             verbose: false,
         }
@@ -72,6 +73,39 @@ impl Forwarder {
     }
 }
 
+struct InterfaceInfo {
+    iface: NetworkInterface,
+    src_ip: Ipv4Addr,
+    bcast_ip: Ipv4Addr,
+}
+
+impl InterfaceInfo {
+    pub fn new(iface: NetworkInterface) -> io::Result<Self> {
+        let (src_ip, bcast_ip) = iface.ips
+            .iter()
+            .find_map(|n| match n {
+                IpNetwork::V4(v4) => Some((v4.ip(), v4.broadcast())),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("interface {:?} has no IPv4 address", &iface.name),
+                )
+            })?;
+
+        Ok(Self {
+            iface,
+            src_ip,
+            bcast_ip,
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.iface.name
+    }
+}
+
 pub fn run(cfg: ForwarderConfig) -> io::Result<()> {
     if cfg.peers.is_empty() {
         return Err(io::Error::new(
@@ -80,31 +114,18 @@ pub fn run(cfg: ForwarderConfig) -> io::Result<()> {
         ));
     }
 
-    let iface = datalink::interfaces()
+    let ifaces = get_ifaces(&cfg.ifaces, cfg.verbose)?;
+    if ifaces.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::NotConnected, "No interfaces available to connect"));
+    }
+
+    let ifaces_data: Vec<InterfaceInfo> = ifaces
         .into_iter()
-        .find(|i| i.name == cfg.iface)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("interface {:?} not found", cfg.iface),
-            )
-        })?;
+        .map(InterfaceInfo::new)
+        .collect::<io::Result<_>>()?;
 
-    let (src_ip, iface_bcast) = iface
-        .ips
-        .iter()
-        .find_map(|n| match n {
-            IpNetwork::V4(v4) => Some((v4.ip(), v4.broadcast())),
-            _ => None,
-        })
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("interface {:?} has no IPv4 address", cfg.iface),
-            )
-        })?;
-
-    let local_ips: HashSet<Ipv4Addr> = datalink::interfaces()
+    // Ensure we get ALL local ips, since other interfaces can bridge to others
+    let local_ips: Arc<HashSet<Ipv4Addr>> = Arc::new(datalink::interfaces()
         .iter()
         .flat_map(|i| {
             i.ips.iter().filter_map(|n| match n {
@@ -112,34 +133,109 @@ pub fn run(cfg: ForwarderConfig) -> io::Result<()> {
                 _ => None,
             })
         })
-        .collect();
+        .collect());
 
-    let (_eth_tx, rx) = match datalink::channel(&iface, Default::default()) {
-        Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!("interface {:?} returned a non-ethernet channel", cfg.iface),
-            ));
+    let mut thread_handles = vec![];
+    let cfg = Arc::new(cfg);
+    for iface in ifaces_data.into_iter() {
+        let (_eth_tx, rx) = match datalink::channel(&iface.iface, Default::default()) {
+            Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("interface {:?} returned a non-ethernet channel", iface.name()),
+                ));
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Keep _udp_rx in scope: TransportSender / TransportReceiver share an
+        // underlying raw socket and dropping the receiver may close it.
+        let (udp_tx, _udp_rx) = transport_channel(
+            4096,
+            TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Udp)),
+        )?;
+
+        if cfg.verbose {
+            eprintln!(
+                "(Thread) w3-portal: sniffing UDP/{} on {} (local {}, bcast {})",
+                cfg.port, iface.name(), iface.src_ip, iface.bcast_ip
+            );
         }
-        Err(e) => return Err(e),
-    };
 
-    // Keep _udp_rx in scope: TransportSender / TransportReceiver share an
-    // underlying raw socket and dropping the receiver may close it.
-    let (udp_tx, _udp_rx) = transport_channel(
-        4096,
-        TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Udp)),
-    )?;
-
-    if cfg.verbose {
-        eprintln!(
-            "w3-portal: sniffing UDP/{} on {} (local {}, bcast {}) -> peers {:?}",
-            cfg.port, cfg.iface, src_ip, iface_bcast, cfg.peers
-        );
+        let cfg = Arc::clone(&cfg);
+        let local_ips_ref = Arc::clone(&local_ips);
+        let handle = thread::spawn(move || {
+            sniff_loop(rx, udp_tx, &cfg, iface.src_ip, iface.bcast_ip, &local_ips_ref)
+        });
+        thread_handles.push(handle);
     }
 
-    sniff_loop(rx, udp_tx, &cfg, src_ip, iface_bcast, &local_ips)
+    eprintln!(" -> peers {:?}", cfg.peers);
+
+    for handle in thread_handles {
+        handle.join()
+            .map_err(|e| io::Error::new(
+                io::ErrorKind::Other,
+                format!("Thread panicked: {:?}", e)
+            ))??;
+    }
+
+    Ok(())
+}
+
+fn get_ifaces(filter: &[String], verbose: bool) -> Result<Vec<NetworkInterface>, io::Error> {
+    let mut ifaces = datalink::interfaces();
+    if filter.is_empty() {
+        ifaces.retain(is_interface_valid);
+        return Ok(ifaces);
+    }
+
+    let mut faces_to_include: HashSet<&str> = filter
+        .iter()
+        .map(|t| t.as_str())
+        .collect();
+    let mut result = vec![];
+    for iface in ifaces {
+        let iface_name = &iface.name[..];
+        if !faces_to_include.contains(iface_name) {
+            continue;
+        }
+
+        if !is_interface_valid(&iface) {
+            if verbose {
+                eprintln!(
+                    "Invalid --iface ({}) has to be up, not loopback, not point-to-point and ipv4. Only include your ethernet or wi-fi",
+                    iface_name
+                );
+            }
+            continue;
+        }
+
+        faces_to_include.remove(iface_name);
+        result.push(iface);
+    }
+
+    if !faces_to_include.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("invalid interface/s: {:?}", faces_to_include)
+        ))
+    }
+
+    Ok(result)
+}
+
+fn is_interface_valid(iface: &NetworkInterface) -> bool {
+    iface.is_up()
+        && !iface.is_loopback()
+        && !iface.is_point_to_point()
+        && iface.ips.iter().any(|ip| ip.is_ipv4())
+        && !is_interface_bridge(iface)
+}
+
+fn is_interface_bridge(iface: &NetworkInterface) -> bool {
+    std::path::Path::new("/sys/class/net").join(&iface.name).join("bridge").exists()
 }
 
 fn sniff_loop(
@@ -250,9 +346,10 @@ mod tests {
 
     #[test]
     fn config_basics() {
-        let c = ForwarderConfig::new(WC3_PORT, "enp42s0");
+        let ifaces = vec!["enp42s0".to_string()];
+        let c = ForwarderConfig::new(WC3_PORT, ifaces.clone());
         assert_eq!(c.port, WC3_PORT);
-        assert_eq!(c.iface, "enp42s0");
+        assert_eq!(c.ifaces, ifaces);
         assert!(c.peers.is_empty());
     }
 }

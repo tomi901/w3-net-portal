@@ -24,9 +24,9 @@ struct Cli {
     #[arg(short, long, default_value_t = WC3_PORT)]
     port: u16,
 
-    /// Local interface to sniff broadcasts on (e.g. enp42s0, wlan0).
-    #[arg(short, long, value_name = "NAME")]
-    iface: String,
+    /// Local interfaces to sniff broadcasts on (e.g. enp42s0, wlan0).
+    #[arg(short, long = "iface", value_name = "NAME")]
+    ifaces: Vec<String>,
 
     /// Peer IP to relay broadcasts to. Repeatable; must be reachable via the
     /// same subnet as --iface. Example: --peer 192.168.100.102
@@ -42,7 +42,7 @@ fn run() -> Result<(), String> {
     let cli = Cli::parse();
     let cfg = ForwarderConfig {
         port: cli.port,
-        iface: cli.iface,
+        ifaces: cli.ifaces,
         peers: cli.peers,
         verbose: cli.verbose,
     };
