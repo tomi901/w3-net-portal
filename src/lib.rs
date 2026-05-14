@@ -173,6 +173,9 @@ pub fn run(cfg: ForwarderConfig) -> io::Result<()> {
 
     eprintln!(" -> peers {:?}", cfg.peers);
 
+    // TODO: This doesn't really report errors immediately and some may go unnoticed
+    // Once the threads are working they shouldn't panic but this will hide many errors
+    // Possible solution: Try setting channels to report errors
     for handle in thread_handles {
         handle.join()
             .map_err(|e| io::Error::new(
