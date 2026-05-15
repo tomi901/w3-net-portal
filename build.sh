@@ -1,2 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BIN="w3-net-portal-cli"
+DIST_DIR="$(dirname "$0")/dist"
+TARGET_DIR="$DIST_DIR/$BIN"
+
 cargo build --release
-sudo setcap cap_net_raw,cap_net_admin+ep ./target/release/w3-net-portal-cli
+
+mkdir -p $TARGET_DIR
+
+cp target/release/$BIN setup.sh LICENSE README.md $TARGET_DIR/
+
+echo "Built distributable at $TARGET_DIR"
