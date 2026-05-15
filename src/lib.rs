@@ -16,12 +16,18 @@
 //!
 //! Requires `CAP_NET_RAW` (sudo, or `setcap cap_net_raw+ep` on the binary).
 
+pub mod config;
+pub mod interface;
+
+pub use config::ForwarderConfig;
+use interface::InterfaceInfo;
+
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::{io, thread};
 
-use pnet::datalink::{self, Channel, DataLinkReceiver, NetworkInterface};
+use pnet::datalink::{self, Channel, DataLinkReceiver};
 use pnet::ipnetwork::IpNetwork;
 use pnet::packet::Packet;
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
@@ -32,39 +38,22 @@ use pnet::transport::{
     TransportChannelType, TransportProtocol, TransportSender, transport_channel,
 };
 
+use crate::interface::get_ifaces;
+
 pub const WC3_PORT: u16 = 6112;
 
 const UDP_HDR_LEN: usize = 8;
 
-#[derive(Debug, Clone)]
-pub struct ForwarderConfig {
-    pub port: u16,
-    pub ifaces: Vec<String>,
-    pub peers: Vec<Ipv4Addr>,
-    pub verbose: bool,
-}
-
-impl ForwarderConfig {
-    pub fn new(port: u16, ifaces: Vec<String>) -> Self {
-        Self {
-            port,
-            ifaces,
-            peers: Vec::new(),
-            verbose: false,
-        }
-    }
-}
-
 pub struct Forwarder {
-    cfg: ForwarderConfig,
+    cfg: config::ForwarderConfig,
 }
 
 impl Forwarder {
-    pub fn new(cfg: ForwarderConfig) -> Self {
+    pub fn new(cfg: config::ForwarderConfig) -> Self {
         Self { cfg }
     }
 
-    pub fn config(&self) -> &ForwarderConfig {
+    pub fn config(&self) -> &config::ForwarderConfig {
         &self.cfg
     }
 
@@ -73,41 +62,7 @@ impl Forwarder {
     }
 }
 
-struct InterfaceInfo {
-    iface: NetworkInterface,
-    src_ip: Ipv4Addr,
-    bcast_ip: Ipv4Addr,
-}
-
-impl InterfaceInfo {
-    pub fn new(iface: NetworkInterface) -> io::Result<Self> {
-        let (src_ip, bcast_ip) = iface
-            .ips
-            .iter()
-            .find_map(|n| match n {
-                IpNetwork::V4(v4) => Some((v4.ip(), v4.broadcast())),
-                _ => None,
-            })
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("interface {:?} has no IPv4 address", &iface.name),
-                )
-            })?;
-
-        Ok(Self {
-            iface,
-            src_ip,
-            bcast_ip,
-        })
-    }
-
-    pub fn name(&self) -> &str {
-        &self.iface.name
-    }
-}
-
-pub fn run(cfg: ForwarderConfig) -> io::Result<()> {
+pub fn run(cfg: config::ForwarderConfig) -> io::Result<()> {
     if cfg.peers.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -204,64 +159,10 @@ pub fn run(cfg: ForwarderConfig) -> io::Result<()> {
     Ok(())
 }
 
-fn get_ifaces(filter: &[String], verbose: bool) -> Result<Vec<NetworkInterface>, io::Error> {
-    let mut ifaces = datalink::interfaces();
-    if filter.is_empty() {
-        ifaces.retain(is_interface_valid);
-        return Ok(ifaces);
-    }
-
-    let mut faces_to_include: HashSet<&str> = filter.iter().map(|t| t.as_str()).collect();
-    let mut result = vec![];
-    for iface in ifaces {
-        let iface_name = &iface.name[..];
-        if !faces_to_include.contains(iface_name) {
-            continue;
-        }
-
-        if !is_interface_valid(&iface) {
-            if verbose {
-                eprintln!(
-                    "Invalid --iface ({}) has to be up, not loopback, not point-to-point and ipv4. Only include your ethernet or wi-fi",
-                    iface_name
-                );
-            }
-            continue;
-        }
-
-        faces_to_include.remove(iface_name);
-        result.push(iface);
-    }
-
-    if !faces_to_include.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("invalid interface/s: {:?}", faces_to_include),
-        ));
-    }
-
-    Ok(result)
-}
-
-fn is_interface_valid(iface: &NetworkInterface) -> bool {
-    iface.is_up()
-        && !iface.is_loopback()
-        && !iface.is_point_to_point()
-        && iface.ips.iter().any(|ip| ip.is_ipv4())
-        && !is_interface_bridge(iface)
-}
-
-fn is_interface_bridge(iface: &NetworkInterface) -> bool {
-    std::path::Path::new("/sys/class/net")
-        .join(&iface.name)
-        .join("bridge")
-        .exists()
-}
-
 fn sniff_loop(
     mut rx: Box<dyn DataLinkReceiver>,
     mut udp_tx: TransportSender,
-    cfg: &ForwarderConfig,
+    cfg: &config::ForwarderConfig,
     src_ip: Ipv4Addr,
     iface_bcast: Ipv4Addr,
     local_ips: &HashSet<Ipv4Addr>,
@@ -358,18 +259,4 @@ fn send_unicast(
     }
     let pkt = UdpPacket::new(&buf).unwrap();
     tx.send_to(pkt, IpAddr::V4(peer))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn config_basics() {
-        let ifaces = vec!["enp42s0".to_string()];
-        let c = ForwarderConfig::new(WC3_PORT, ifaces.clone());
-        assert_eq!(c.port, WC3_PORT);
-        assert_eq!(c.ifaces, ifaces);
-        assert!(c.peers.is_empty());
-    }
 }
