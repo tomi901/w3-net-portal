@@ -10,6 +10,8 @@ Additionally it allows LAN to work over VPNs or remote IPs.
 
 ## How to run
 
+Download the [latest release](https://github.com/tomi901/w3-net-portal/releases/latest).
+
 Using the executable cli, run `./w3-net-portal-cli -P [The other PC's IP to play with] -P [Optional additional IP for multiple devices]`
 
 You can also add the `-v` argument to log additional info of forwarded data.
