@@ -7,8 +7,9 @@ TARGET_DIR="$DIST_DIR/$BIN"
 
 cargo build --release
 
-mkdir -p $TARGET_DIR
+rm -rf "$DIST_DIR"
+mkdir -p "$TARGET_DIR"
 
-cp target/release/$BIN setup.sh LICENSE README.md $TARGET_DIR/
+cp "target/release/$BIN" setup.sh LICENSE README.md "$TARGET_DIR/"
 
 echo "Built distributable at $TARGET_DIR"

@@ -1,10 +1,10 @@
 [package]
-name = "w3-portal"
-version = "0.1.0"
+name = "w3-net-portal"
+version = "0.0.0-dev"
 edition = "2024"
 
 [lib]
-name = "w3_portal"
+name = "w3_net_portal"
 path = "src/lib.rs"
 
 [[bin]]

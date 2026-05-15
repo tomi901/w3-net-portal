@@ -4,7 +4,7 @@
 use std::net::Ipv4Addr;
 
 use clap::Parser;
-use w3_portal::{Forwarder, ForwarderConfig, WC3_PORT};
+use w3_net_portal::{Forwarder, ForwarderConfig, WC3_PORT};
 
 #[derive(Parser, Debug)]
 #[command(

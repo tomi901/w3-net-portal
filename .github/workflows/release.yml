@@ -2,10 +2,13 @@ name: Release
 
 on:
   push:
-    tags: v[0-9]+\.[0-9]+\.[0-9]+.*
+    tags: ["v*.*.*"]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -14,7 +17,20 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - uses: Swatinem/rust-cache@v2
+    - run: cargo install cargo-edit --locked
     - name: Build
-      run: ./build.sh
-    - name: Create tar file
-      run: cd dist && tar -czf w3-net-portal-cli.tar.gz ./w3-net-portal-cli
+      run: |
+        VERSION=${{ github.ref_name }}
+        VERSION=${VERSION#v}
+
+        echo "Setting version $VERSION..."
+        cargo set-version $VERSION
+
+        ./build.sh
+        cd dist
+        tar -czf w3-net-portal-cli-${{ github.ref_name }}.tar.gz ./w3-net-portal-cli
+    - name: Release
+      uses: softprops/action-gh-release@v3
+      with:
+        files: dist/w3-net-portal-cli-${{ github.ref_name }}.tar.gz
