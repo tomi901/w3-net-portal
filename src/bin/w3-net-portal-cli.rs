@@ -17,7 +17,7 @@ use w3_net_portal::{Forwarder, ForwarderConfig, WC3_PORT};
                   unicast on its normal 0.0.0.0:6112 socket — no port \
                   binding here, so no conflict with Wine. Requires \
                   CAP_NET_RAW (sudo, or `setcap cap_net_raw+ep` on the binary).",
-    version,
+    version
 )]
 struct Cli {
     /// UDP port (Warcraft III uses 6112).
@@ -46,7 +46,9 @@ fn run() -> Result<(), String> {
         peers: cli.peers,
         verbose: cli.verbose,
     };
-    Forwarder::new(cfg).run().map_err(|e| format!("forwarder: {e}"))
+    Forwarder::new(cfg)
+        .run()
+        .map_err(|e| format!("forwarder: {e}"))
 }
 
 fn main() -> Result<(), String> {
