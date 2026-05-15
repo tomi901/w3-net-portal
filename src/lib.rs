@@ -18,6 +18,7 @@
 
 pub mod config;
 pub mod interface;
+pub mod filter;
 
 pub use config::ForwarderConfig;
 use interface::InterfaceInfo;
@@ -184,31 +185,21 @@ fn sniff_loop(
         let Some(udp) = UdpPacket::new(ip.payload()) else {
             continue;
         };
-        if udp.get_destination() != cfg.port {
-            continue;
-        }
 
         let pkt_src = ip.get_source();
         let pkt_dst = ip.get_destination();
         let src_port = udp.get_source();
         let dst_port = udp.get_destination();
 
-        // Only relay broadcast-destined packets — these are the WC3 discovery
-        // announcements we want to rewrite to unicast. Skip unicasts; those
-        // are already addressed to a specific host and Wine handles them.
-        let is_broadcast = pkt_dst.is_broadcast() || pkt_dst == iface_bcast;
-        if !is_broadcast {
-            continue;
-        }
-
-        // Only relay broadcasts that originated on this host. Broadcasts from
-        // a remote peer's WC3 will also cross our wire (the AP bridges them);
-        // their own portal already unicasts them to us, so re-relaying would
-        // double-deliver.
-        if !local_ips.contains(&pkt_src) {
-            if cfg.verbose {
-                eprintln!("skip remote-origin {pkt_src}:{src_port} -> {pkt_dst}:{dst_port}");
-            }
+        let relay_decision = filter::decide_relay(
+            pkt_src,
+            pkt_dst,
+            dst_port,
+            cfg.port,
+            iface_bcast,
+            local_ips,
+        );
+        if relay_decision.should_skip() {
             continue;
         }
 
