@@ -17,8 +17,8 @@
 //! Requires `CAP_NET_RAW` (sudo, or `setcap cap_net_raw+ep` on the binary).
 
 pub mod config;
-pub mod interface;
 pub mod filter;
+pub mod interface;
 
 pub use config::ForwarderConfig;
 use interface::InterfaceInfo;
@@ -191,14 +191,8 @@ fn sniff_loop(
         let src_port = udp.get_source();
         let dst_port = udp.get_destination();
 
-        let relay_decision = filter::decide_relay(
-            pkt_src,
-            pkt_dst,
-            dst_port,
-            cfg.port,
-            iface_bcast,
-            local_ips,
-        );
+        let relay_decision =
+            filter::decide_relay(pkt_src, pkt_dst, dst_port, cfg.port, iface_bcast, local_ips);
         if relay_decision.should_skip() {
             continue;
         }
